@@ -12,6 +12,7 @@ namespace ActiveScreenMatch
 
         internal static int Index(int X, int Y, int Stride) => (Y * Stride) + (X >> 3);
         internal static byte Mask(int X) => (byte)(0x80 >> (X & 0x7));
+        internal bool GetMaskedBool(int X = 0, int Y = 0) => (*(byte*)(Data.Scan0 + Index(X, Y, Data.Stride)) & Mask(X)) > 0;
 
         public Span<bool> GetImageLineAt(int y)
         {
@@ -23,8 +24,6 @@ namespace ActiveScreenMatch
             return Line;
         }
 
-        public bool GetMaskedBool(int X = 0, int Y = 0) => (*(byte*)(Data.Scan0 + Index(X, Y, Data.Stride)) & Mask(X)) > 0;
-
         public void Dispose()
         {
             GC.SuppressFinalize(this);
@@ -33,10 +32,7 @@ namespace ActiveScreenMatch
 
         public MaskedBitmap(Bitmap bitmap)
         {
-            if (bitmap == null)
-                throw new System.ArgumentNullException(nameof(bitmap));
-
-            Image = bitmap;
+            Image = bitmap ?? throw new ArgumentNullException(nameof(bitmap));
             Data = bitmap.LockBits(new Rectangle(0, 0, bitmap.Width, bitmap.Height), ImageLockMode.ReadOnly, PixelFormat.Format1bppIndexed);
         }
 
@@ -73,48 +69,81 @@ namespace ActiveScreenMatch
             };
 
             Point p = default;
+            int failed = 2;
 
             void ThreadForward(object State)
             {
                 AutoResetEvent Complete = (AutoResetEvent)State;
-                int HeightUp = 0;
-                while (HeightUp < Hay.Data.Height)
+
+                Point RecursiveSearch(int TopDownToMid)
                 {
-                    ReadOnlySpan<bool> TopDownHay = Hay.GetImageLineAt(HeightUp);
-                    int BottomIndex = TopDownHay.IndexOf(Needle.GetImageLineAt(0));
-                    if (BottomIndex > 0 &&
-                        Hay.GetImageLineAt(HeightUp + 1).Slice(BottomIndex).IndexOf(Needle.GetImageLineAt(1)) == 0)
+                    ReadOnlySpan<bool> TopDownHay = Hay.GetImageLineAt(TopDownToMid);
+                    int TopIndex = TopDownHay.IndexOf(Needle.GetImageLineAt(0));
+                    if (TopIndex > 0 &&
+                        Hay.GetImageLineAt(TopDownToMid + 1).Slice(TopIndex).IndexOf(Needle.GetImageLineAt(1)) == 0)
                     {
-                        p = new Point(BottomIndex + (Needle.Data.Width / 2), HeightUp + (Needle.Data.Height / 2));
-                        Complete.Set();
-                        return;
+                        return new Point(TopIndex + (Needle.Data.Width / 2), TopDownToMid + (Needle.Data.Height / 2));
+                    }
+                    TopDownToMid++;
+                    if (TopDownToMid < Hay.Data.Height /2)
+                    {
+                        return RecursiveSearch(TopDownToMid);
+                    }
+                    return default;
+                }
+                p = RecursiveSearch(0);
+                if (p == default)
+                {
+                    if (failed == 2)
+                    {
+                        failed--;
                     }
                     else
                     {
-                        HeightUp++;
+                        Complete.Set();
                     }
+                }
+                else
+                {
+                    Complete.Set();
                 }
             }
 
             void ThreadBackward(object State)
             {
                 AutoResetEvent Complete = (AutoResetEvent)State;
-                int HeightDown = Hay.Data.Height;
-                while (HeightDown > 0)
+
+                Point RecursiveSearch(int BottomUp)
                 {
-                    Span<bool> BottomUpHay = Hay.GetImageLineAt(HeightDown);
-                    int BottomIndex = BottomUpHay.IndexOf(Needle.GetImageLineAt(0));
-                    if (BottomIndex > 0 &&
-                        Hay.GetImageLineAt(HeightDown + 1).Slice(BottomIndex).IndexOf(Needle.GetImageLineAt(1)) == 0)
+                    ReadOnlySpan<bool> BottomUpHay = Hay.GetImageLineAt(BottomUp);
+                    int BottomUpIndex = BottomUpHay.IndexOf(Needle.GetImageLineAt(0));
+                    if (BottomUpIndex > 0 &&
+                        Hay.GetImageLineAt(BottomUp + 1).Slice(BottomUpIndex).IndexOf(Needle.GetImageLineAt(1)) == 0)
                     {
-                        p = new Point(BottomIndex + (Needle.Data.Width / 2), HeightDown + (Needle.Data.Height / 2));
-                        Complete.Set();
-                        return;
+                        return new Point(BottomUpIndex + (Needle.Data.Width / 2), BottomUp + (Needle.Data.Height / 2));
+                    }
+                    BottomUp--;
+                    if (BottomUp > Hay.Data.Height / 2)
+                    {
+                        RecursiveSearch(BottomUp);
+                    }
+                    return default;
+                }
+                p = RecursiveSearch(Hay.Data.Height -1);
+                if (p == default)
+                {
+                    if (failed == 2)
+                    {
+                        failed--;
                     }
                     else
                     {
-                        HeightDown--;
+                        Complete.Set();
                     }
+                }
+                else
+                {
+                    Complete.Set();
                 }
             }
 
